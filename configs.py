@@ -95,16 +95,17 @@ config_data={
         "vocab_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-vocab.json",
         "merges_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-merges.txt"
     },
-    "device" : "cuda:5" # 6.5.4.3.1
+    "device" : "cuda:1" # 6.5.4.3.1
 }
 
 # EMBED_TYPE="w2v"
 # EMBED_TYPE="bert"
-EMBED_TYPE="vulberta"
+# EMBED_TYPE="vulberta"
+EMBED_TYPE="vulberta_sam"
 
 # ["crossvul", "cvefixes", "mvd", "diversevul", "reveal"]
 
-config_data["create"]["dataset"] = "crossvul" 
+config_data["create"]["dataset"] = "mvd" 
 
 if EMBED_TYPE == "w2v":
     config_data["embed"]["embed_type"] = "w2v"
@@ -140,17 +141,16 @@ elif EMBED_TYPE == "vulberta":
         "model": "data/model/w2v/",
         "tokens": "data/tokens/w2v/",
     }
-elif EMBED_TYPE == "sam_w2v": 
-    config_data["embed"]["embed_type"] = "sam_w2v"
-    config_data["learning_rate"] = config_data["bertggcn"]["learning_rate"]
+elif EMBED_TYPE == "vulberta_sam": 
+    config_data["embed"]["embed_type"] = "vulberta_sam"
+    config_data["learning_rate"] = config_data["vulberta"]["learning_rate"]
     config_data["paths"] = {
         "cpg": "data/cpg/",
         "joern": "data/joern/",
         "raw": "/home/aikedaer/mydata/data/vuldata/Devign/",
         "input": "data/input/w2v/",
-        "model": "data/model/sam_w2v/",
-        "tokens": "data/tokens/sam_w2v/",
-        "w2v": "data/w2v/"
+        "model": "data/model/w2v/",
+        "tokens": "data/tokens/w2v/",
     }
 
 CONFIG = Box(config_data)

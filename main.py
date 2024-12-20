@@ -246,6 +246,7 @@ def process_task(args):
         model.embed.weight.data[CONFIG.vulberta.model.pad_idx] = torch.zeros(CONFIG.vulberta.model.emb_size)
         model.to(CONFIG.device)
         optimizer = optim.AdamW(model.parameters(), lr=CONFIG.vulberta.learning_rate, weight_decay=CONFIG.vulberta.weight_decay)
+
         criterion = nn.CrossEntropyLoss().to(CONFIG.device)
         loader_dict = {}
         for mode in ["train", "valid", "test"]:
@@ -256,16 +257,35 @@ def process_task(args):
         val_loader = loader_dict["valid"]
         test_loader = loader_dict["test"]
 
+    elif CONFIG.embed.embed_type == "vulberta_sam":
+        model = process.VulBertaGGCN(CONFIG)
+        model.embed.weight.data[CONFIG.vulberta.model.pad_idx] = torch.zeros(CONFIG.vulberta.model.emb_size)
+        model.to(CONFIG.device)
+        optimizer = SAM(model.parameters(), base_optimizer=torch.optim.Adam, lr=CONFIG.vulberta.learning_rate, weight_decay=CONFIG.vulberta.weight_decay)
+
+        criterion = nn.CrossEntropyLoss().to(CONFIG.device)
+        loader_dict = {}
+        for mode in ["train", "valid", "test"]:
+            dataset_ = data.loads(os.path.join(PATHS.input, mode))
+            loader_dict[mode] = StreamDataset(dataset_, CONFIG).get_loader(CONFIG.process.batch_size, shuffle=CONFIG.process.shuffle)
+
+        train_loader = loader_dict["train"]
+        val_loader = loader_dict["valid"]
+        test_loader = loader_dict["test"]
     
     model_test = copy.deepcopy(model)
 
     if args.mode == "train":
+        
         run_name = f"algo:devign-{CONFIG.embed.embed_type}_data:{CONFIG.create.dataset}"
         wandb.init(project="vul-detect", name=run_name, config={})
 
         best_f1 = 0.0
         for epoch in tqdm(range(1, context.epochs + 1), desc="Epochs:"):
-            train_loss = train(model, CONFIG.device, train_loader, optimizer, criterion, epoch)
+            if "sam" in CONFIG.embed.embed_type:
+                train_loss = train_sam(model, CONFIG.device, train_loader, optimizer, criterion, epoch)
+            else:
+                train_loss = train(model, CONFIG.device, train_loader, optimizer, criterion, epoch)
             test_loss, accuracy, precision, recall, f1 = evaluate(model, CONFIG.device, val_loader, criterion)
             if best_f1 < f1:
                 best_f1 = f1
@@ -297,6 +317,7 @@ def process_task(args):
 def train(model, device, train_loader, optimizer, criterion, epoch):
     model.train()
     total_loss = 0.0
+
     for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc="training"):
         batch.to(device)
         y_pred = model(batch)
@@ -305,6 +326,30 @@ def train(model, device, train_loader, optimizer, criterion, epoch):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+
+    avg_loss = total_loss / len(train_loader)
+    return avg_loss
+
+def train_sam(model, device, train_loader, optimizer, criterion, epoch):
+    model.train()
+    total_loss = 0.0
+
+    for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc="training"):
+        batch.to(device)
+
+        enable_running_stats(model)
+        y_pred = model(batch)
+        loss = criterion(y_pred, batch.y.long()) 
+        loss.backward()
+        optimizer.first_step(zero_grad=True)
+        total_loss += loss.item()
+
+        # second forward-backward step
+        disable_running_stats(model)
+        y_pred = model(batch)
+        loss2 = criterion(y_pred, batch.y.long()) 
+        loss2.backward()
+        optimizer.second_step(zero_grad=True)
 
     avg_loss = total_loss / len(train_loader)
     return avg_loss
@@ -366,10 +411,11 @@ def main():
         process_task(args)
 
 if __name__ == "__main__":
+    # import os
+    # os.environ["WANDB_MODE"] = "disabled"
     main()
 
-# python main.py -cpg -embed -p -mode train -path ckpts/w2v_crossvul.pth
-# python main.py -p -mode train -path ckpts/w2v_mvd.pth
+# python main.py -p -path ckpts/vulberta_sam_crossvul.pth
 # python main.py -p -mode train -path ckpts/w2v_draper.pth
 # python main.py -p -mode train -path ckpts/w2v_vuldeepecker.pth
 # python main.py -p -mode train -path ckpts/w2v_reveal.pth

@@ -1,11 +1,7 @@
 import threading
 from torch.utils.data import Dataset
-from torch_geometric.data import DataLoader
-from tqdm import tqdm
-import src.utils.functions.cpg as cpg
-import src.process as process
-import src.prepare as prepare
-from transformers import RobertaTokenizer, RobertaModel
+# from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 import torch
 
 # for vulberta

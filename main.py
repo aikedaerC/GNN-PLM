@@ -15,13 +15,14 @@ import shutil
 from argparse import ArgumentParser
 import re 
 from gensim.models.word2vec import Word2Vec
+import numpy as np
 from transformers import RobertaTokenizer, RobertaModel
 import pandas as pd
 from configs import CONFIG
 import src.data as data
 import src.prepare as prepare
 import src.process as process
-from src.utils.objects.input_dataset import InputDataset, StreamDataset
+from src.utils.objects.input_dataset import InputDataset, StreamDataset, StreamDataset0
 import src.utils.functions.cpg as cpg
 import os
 import torch
@@ -33,7 +34,11 @@ import wandb
 from torch import nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
+from accelerate import Accelerator
+import datetime
+import json
+from torch.optim.lr_scheduler import StepLR
+from src.models.model_pretrain import GITModel
 
 PATHS = CONFIG.paths
 FILES = CONFIG.files
@@ -48,11 +53,28 @@ try:
 except:
     pass
 
+# os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+torch.cuda.empty_cache()
+
 os.makedirs(PATHS.cpg, exist_ok=True)
 os.makedirs(PATHS.tokens, exist_ok=True)
 os.makedirs(PATHS.input, exist_ok=True)
 
-
+def ToDevice(obj, device):
+    if isinstance(obj, dict):
+        for k in obj:
+            obj[k] = ToDevice(obj[k], device)
+        return obj
+    elif isinstance(obj, tuple) or isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = ToDevice(obj[i], device)
+        return obj
+    elif isinstance(obj, str):
+        pass
+    else:
+        return obj.to(device)
+    
 def select(dataset, filter_column_value):
     result = dataset # dataset.loc[dataset['project'] == filter_column_value.project]
     len_filter = result.func.str.len() < 1200
@@ -156,7 +178,7 @@ def embed_task():
         os.makedirs(cpg_input, exist_ok=True)
         dataset_files = data.get_directory_files(cpg_path)
         # ########################################################################################## #
-        if context.embed_type in ["w2v", "vulberta", "vulberta_sam"]:
+        if context.embed_type in ["w2v", "vulberta", "ctg-former", "vulberta_sam"]:
             w2vmodel = Word2Vec(**context.word2vec_args)                                             #
             w2v_init = True                                                                           #
         # ########################################################################################## #
@@ -173,21 +195,21 @@ def embed_task():
             # data.write(tokens_dataset, PATHS.tokens, f"{file_name}_{FILES.tokens}")
             # ########################################################################################## #
             # word2vec used to learn the initial embedding of each token     
-            if context.embed_type in ["w2v", "vulberta", "vulberta_sam"]:                                                              #
+            if context.embed_type in ["w2v", "ctg-former", "vulberta", "vulberta_sam"]:                                                              #
                 w2vmodel.build_vocab(sentences=tokens_dataset.tokens, update=not w2v_init)               #
                 w2vmodel.train(tokens_dataset.tokens, total_examples=w2vmodel.corpus_count, epochs=1)    #
                 if w2v_init:                                                                             #
                     w2v_init = False                                                                     #
             # ########################################################################################## #
             # Embed cpg to node representation and pass to graph data structure
-            if context.embed_type in ["w2v", "vulberta", "vulberta_sam"]:
+            if context.embed_type in ["w2v", "ctg-former", "vulberta", "vulberta_sam"]:
                 embed_model = w2vmodel.wv
 
             tqdm.pandas()
-            cpg_dataset["nodes"] = cpg_dataset.progress_apply(lambda row: cpg.parse_to_nodes(row.cpg, context.nodes_dim), axis=1)
+            cpg_dataset["nodes"] = cpg_dataset.progress_apply(lambda row: cpg.parse_to_nodes(row.cpg, context.nodes_dim), axis=1) # context.nodes_dim
             # remove rows with no nodes
             cpg_dataset = cpg_dataset[cpg_dataset['nodes'].apply(len) > 0]
-            cpg_dataset["input"] = cpg_dataset.progress_apply(lambda row: prepare.nodes_to_input(row.nodes, row.target, context.nodes_dim,
+            cpg_dataset["input"] = cpg_dataset.progress_apply(lambda row: prepare.nodes_to_input(row.nodes, row.target, row.func, context.nodes_dim,
                                                                                         embed_model, context.edge_type, CONFIG), axis=1)
             
             data.drop(cpg_dataset, ["nodes"])
@@ -203,7 +225,7 @@ def embed_task():
         # ########################################################################################## #
 
 def process_task(args):
-    MODEL_DIR = "/home/aikedaer/.cache/huggingface/hub/models--microsoft--codebert-base/snapshots/3b0952feddeffad0063f274080e3c23d75e7eb39"
+    # MODEL_DIR = "/home/aikedaer/.cache/huggingface/hub/models--microsoft--codebert-base/snapshots/3b0952feddeffad0063f274080e3c23d75e7eb39"
     context = CONFIG.process
     model_path = os.path.join(PATHS.model,CONFIG.create.dataset)
     os.makedirs(model_path, exist_ok=True)
@@ -226,20 +248,51 @@ def process_task(args):
 
 
     elif CONFIG.embed.embed_type == "bert":
-        bertggcn = CONFIG.bertggcn
-        model = process.BertGGCN(bertggcn.model.gated_graph_conv_args, bertggcn.model.conv_args, bertggcn.model.emb_size, MODEL_DIR, CONFIG.device)
-        optimizer = optim.Adam(model.parameters(), lr=bertggcn.learning_rate, weight_decay=bertggcn.weight_decay)
+        model = process.BertGGCN(CONFIG)
+        optimizer = optim.Adam(model.parameters(), lr=CONFIG.bertggcn.learning_rate, weight_decay=CONFIG.bertggcn.weight_decay)
         def criterion(pred, label):
             return F.binary_cross_entropy(pred, label) #  + F.l1_loss(pred, label) * bertggcn.loss_lambda
             
-        train_dataset = data.loads(os.path.join(PATHS.input, "train"))
-        valid_dataset = data.loads(os.path.join(PATHS.input, "valid"))
-        test_dataset = data.loads(os.path.join(PATHS.input, "test"))
+        loader_dict = {}
+        for mode in ["train", "valid", "test"]:
+            dataset_ = data.loads(os.path.join(PATHS.input, mode))
+            loader_dict[mode] = StreamDataset0(dataset_, CONFIG).get_loader(CONFIG.process.batch_size, shuffle=CONFIG.process.shuffle)
 
-        train_loader = InputDataset(train_dataset).get_loader(context.batch_size, shuffle=context.shuffle)
-        val_loader = InputDataset(valid_dataset).get_loader(context.batch_size, shuffle=context.shuffle)
-        test_loader = InputDataset(test_dataset).get_loader(context.batch_size, shuffle=context.shuffle)
+        train_loader = loader_dict["train"]
+        val_loader = loader_dict["valid"]
+        test_loader = loader_dict["test"]
 
+    elif CONFIG.embed.embed_type == "ctg-former":
+
+        latest_checkpoint = None
+        accelerator = Accelerator(device_placement=True)
+        
+        config = json.load(open(args.config_path))
+        model = GITModel(config = config['network'], device = accelerator.device)
+        best_loss = None
+        if latest_checkpoint is not None:
+            state_dict = torch.load(latest_checkpoint, map_location='cpu')["model_state_dict"]
+            best_loss = torch.load(latest_checkpoint, map_location='cpu')["best_loss"]
+            model.load_state_dict(state_dict, strict = False)
+
+        loader_dict = {}
+        for mode in ["train", "valid", "test"]:
+            dataset_ = data.loads(os.path.join(PATHS.input, mode))
+            loader_dict[mode] = StreamDataset0(dataset_, CONFIG).get_loader(CONFIG.process.batch_size, shuffle=CONFIG.process.shuffle)
+        train_loader = loader_dict["train"]
+        val_loader = loader_dict["valid"]
+        test_loader = loader_dict["test"]
+        val_loader = accelerator.prepare_data_loader(val_loader, device_placement=True)
+        test_loader = accelerator.prepare_data_loader(test_loader, device_placement=True)
+
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=CONFIG.ctg_former.learning_rate, weight_decay=CONFIG.ctg_former.weight_decay)
+        scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+        device = accelerator.device
+        model = model.to(device)
+        model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
+
+        train_ctg_decoder(train_loader, val_loader, test_loader, model, optimizer, scheduler, CONFIG, CONFIG.device, accelerator, best_loss)
+        exit()
 
     elif CONFIG.embed.embed_type == "vulberta":
         model = process.VulBertaGGCN(CONFIG)
@@ -284,6 +337,7 @@ def process_task(args):
         for epoch in tqdm(range(1, context.epochs + 1), desc="Epochs:"):
             if "sam" in CONFIG.embed.embed_type:
                 train_loss = train_sam(model, CONFIG.device, train_loader, optimizer, criterion, epoch)
+                
             else:
                 train_loss = train(model, CONFIG.device, train_loader, optimizer, criterion, epoch)
             test_loss, accuracy, precision, recall, f1 = evaluate(model, CONFIG.device, val_loader, criterion)
@@ -320,6 +374,7 @@ def train(model, device, train_loader, optimizer, criterion, epoch):
 
     for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc="training"):
         batch.to(device)
+        # import pdb;pdb.set_trace()
         y_pred = model(batch)
         model.zero_grad()
         loss = criterion(y_pred, batch.y.long()) 
@@ -384,6 +439,71 @@ def evaluate(model, device, test_loader, criterion):
 
     return test_loss, accuracy, precision, recall, f1
 
+
+def val_ctg(val_loader, model, device):
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        val_loader = tqdm(val_loader, desc="Validation")
+        for i, mol in enumerate(val_loader):
+            mol = ToDevice(mol, device)
+            #mol['smiles'] = smiles
+            loss = model(mol)
+            val_loss += loss.detach().cpu().item()
+        # logger.info("validation loss %.4lf" % (val_loss / len(val_loader)))
+    return val_loss / len(val_loader)
+
+def train_ctg_decoder(train_loader, val_loader, test_loader, model, optimizer, scheduler, CONFIG, device, accelerator, best_loss = None):
+    # running_loss = AverageMeter()
+    step = 0
+    loss_values = {"train_loss": [], "val_loss": [], "test_loss": []}
+    for epoch in range(CONFIG.process.epochs):
+        #model.train()
+        train_loss = []
+        train_loader = tqdm(train_loader, desc="Training")
+        for mol in train_loader:
+            # import pdb;pdb.set_trace()
+            mol = ToDevice(mol, device)
+            try:
+                loss = model(mol)
+                accelerator.backward(loss)
+                optimizer.step()
+                #scheduler.step()
+                optimizer.zero_grad()
+            except:
+                print(f"graph issues found in {step} mol: {mol}")
+            # running_loss.update(loss.detach().cpu().item())
+            step += 1
+            # if step % args.logging_steps == 0:
+                # logger.info("Steps=%d Training Loss=%.4lf" % (step, running_loss.get_average()))
+                # train_loss.append(running_loss.get_average())
+                # running_loss.reset()
+
+        loss_values["train_loss"].append(np.mean(train_loss))
+        val_loss = val_ctg(val_loader, model, device)
+        test_loss = val_ctg(test_loader, model, device)
+        loss_values["val_loss"].append(val_loss)
+        loss_values["test_loss"].append(test_loss)
+        if best_loss == None or val_loss<best_loss :
+        #if True:
+            best_loss = val_loss
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+            
+            torch.save({
+                'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+                'best_loss': best_loss
+            }, os.path.join(CONFIG.paths.output_path, f"checkpoint_{epoch}_{timestamp}.pth"))
+          
+            message = f"best_loss:{best_loss} ,val_loss:{val_loss}, checkpoint_{epoch}_{timestamp}.pth saved"
+            print(message)
+        else:
+            message = f"best_loss:{best_loss} ,val_loss:{val_loss}, ckpt passed"
+            print(message)
+
+        print(loss_values)
+
+ 
+
 def main():
     parser: ArgumentParser = argparse.ArgumentParser()
     parser.add_argument('-cpg', '--cpg', action='store_true', help='Specify to perform CPG generation task')
@@ -391,6 +511,7 @@ def main():
     parser.add_argument('-mode', '--mode', default="train", help='Specify the mode (e.g., train, test)')
     parser.add_argument('-path', '--path', default="ckpts/default.pth", help='Specify the path for the model')
     parser.add_argument('-p', '--process', action='store_true')
+    parser.add_argument("--config_path", type=str, default="src/configs/config.json")
 
     args = parser.parse_args()
 
@@ -410,12 +531,13 @@ def main():
     if args.process:
         process_task(args)
 
+
 if __name__ == "__main__":
-    # import os
-    # os.environ["WANDB_MODE"] = "disabled"
+    import os
+    os.environ["WANDB_MODE"] = "disabled"
     main()
 
-# python main.py -p -path ckpts/vulberta_sam_crossvul.pth
+# python main.py -p -path ckpts/vulberta_mvd.pth
 # python main.py -p -mode train -path ckpts/w2v_draper.pth
 # python main.py -p -mode train -path ckpts/w2v_vuldeepecker.pth
 # python main.py -p -mode train -path ckpts/w2v_reveal.pth

@@ -140,7 +140,7 @@ class BertGGCN(nn.Module):
         self.count_parameters()
 
     def forward(self, gnn_data):
-        import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
         gnn_data.x = self.reduce_embedding(gnn_data)
         x, edge_index, text = gnn_data.x, gnn_data.edge_index, gnn_data.func
         x = self.ggc(x, edge_index) # [batch_size*205, 200]
@@ -236,12 +236,7 @@ class VulBertaGGCN(nn.Module):
         logits = self.fc3(x)
         # sig = torch.sigmoid(torch.flatten(logits))
         return logits
-    
 
-    def reduce_embedding(self, data):
-        linear_layer = nn.Linear(data.x.size(1), 101).to(self.device)
-        reduced_embedding = linear_layer(data.x)
-        return reduced_embedding
     
     def save(self, path):
         print(path)

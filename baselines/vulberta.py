@@ -6,7 +6,7 @@ import torch
 from transformers import RobertaModel
 import re
 import os
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import threading
@@ -23,7 +23,7 @@ from tokenizers.normalizers import StripAccents,Replace
 from tokenizers import processors
 from tokenizers.processors import TemplateProcessing
 import wandb
-
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
     
 class BatchDataset(Dataset):

@@ -127,6 +127,55 @@ class InputDataset(Dataset):
     def get_loader(self, batch_size, shuffle=True):
         return DataLoader(dataset=self, batch_size=batch_size, shuffle=shuffle, drop_last=True)
 
+from transformers import BertTokenizer
+class StreamDataset0(Dataset):
+    def __init__(self, dataset, CONFIG):
+        self.config = CONFIG
+        self.emb_size = CONFIG.vulberta.model.emb_size
+        self.model_dir = CONFIG.vulberta.model.model_dir
+        self.device = CONFIG.device
+        
+        self.vocab_path = CONFIG.vulberta.vocab_path #"vulberta/tokenizer/drapgh-vocab.json"
+        self.merges_path = CONFIG.vulberta.merges_path # "vulberta/tokenizer/drapgh-merges.txt"
+        # self.tokenizer = VulBertaTokenizer(self.vocab_path, self.merges_path, max_length=512).get_tokenizer()
+        self.tokenizer = BertTokenizer.from_pretrained("allenai/scibert_scivocab_uncased", truncation_side='right', model_max_length=512)
+        self.tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+        # self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
+        # self.bert_model = RobertaModel.from_pretrained(self.model_dir).to(self.device)
+        # self.embed_model = (self.tokenizer, self.bert_model, process.model.encode_input)
+
+        self.dataset = dataset
+        
+        # self.dataset["nodes"] = self.dataset.progress_apply(lambda row: cpg.parse_to_nodes(row.cpg, CONFIG.embed.nodes_dim), axis=1)
+        # self.dataset = self.dataset[self.dataset['nodes'].apply(len) > 0]
+        # self.dataset = self.dataset.progress_apply(lambda row: prepare.nodes_to_input(row.nodes, row.target, row.func, self.config.embed.nodes_dim,
+        #                                                                     self.embed_model, self.config.embed.edge_type, self.config), axis=1)
+
+        # func, target, cpg, nodes => input
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        data = self.dataset.iloc[index].input
+        text = self.dataset.iloc[index].func
+        # encoded = self.tokenizer.encode(text)
+        encoded = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=128,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        data.input_ids = torch.tensor(encoded.input_ids.squeeze(0), dtype=torch.int64)
+        data.attention_mask = torch.tensor(encoded.attention_mask.squeeze(0), dtype=torch.int64)
+        # import pdb;pdb.set_trace()
+
+        return data
+
+    def get_loader(self, batch_size, shuffle=True):
+        return DataLoader(dataset=self, batch_size=batch_size, shuffle=shuffle, drop_last=True, pin_memory=True)
+
 
 class StreamDataset(Dataset):
     def __init__(self, dataset, CONFIG):
@@ -155,9 +204,13 @@ class StreamDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
+        # import pdb;pdb.set_trace()
         data = self.dataset.iloc[index].input
-        encoded = self.tokenizer.encode(self.dataset.iloc[index].func)
+        text = self.dataset.iloc[index].func
+        encoded = self.tokenizer.encode(text)
         data.input_ids = torch.tensor(encoded.ids, dtype=torch.int64)
+        # data.attention_mask = torch.tensor(encoded.mask, dtype=torch.int64)
+        # data.text = text
         return data
 
     def get_loader(self, batch_size, shuffle=True):

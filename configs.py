@@ -29,25 +29,25 @@ config_data={
 
     "embed" : {
         "embed_type": "bert", 
-        "nodes_dim": 205,
+        "nodes_dim": 50, # 205
         "word2vec_args": { 
-            "size": 100,
+            "size": 8, # 100
             "alpha": 0.01,
-            "window": 5,
+            "window": 5, # 5
             "min_count": 3,
             "sample": 1e-5,
             "workers": 4,
             "sg": 1,
             "hs": 0,
-            "negative": 5
+            "negative": 5 # 5
         },
         "edge_type": "Ast" #Cpg, Ast
     },
 
     "process" : {
-        "epochs": 50,
+        "epochs": 20,
         "patience": 10,
-        "batch_size": 128,
+        "batch_size": 12,
         "dataset_ratio": 0.2,
         "shuffle": False
     },
@@ -95,17 +95,31 @@ config_data={
         "vocab_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-vocab.json",
         "merges_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-merges.txt"
     },
-    "device" : "cuda:1" # 6.5.4.3.1
+    "ctg_former": {
+        "learning_rate": 2e-5,
+        "weight_decay": 1.3e-6,
+        "loss_lambda": 1.3e-6,
+        "model": {
+            "pad_idx": 1,
+            "model_dir": "/home/aikedaer/mydata/devign/baselines/vulberta/models/pretrain/VulBERTa/",
+            "gated_graph_conv_args": {"out_channels": 200, "num_layers": 6, "aggr": "add", "bias": True},
+            "emb_size": 768
+        },
+        "vocab_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-vocab.json",
+        "merges_path": "/home/aikedaer/mydata/devign/baselines/vulberta/tokenizer/drapgh-merges.txt"
+    },
+    "device" : "cuda:0" # 6.5.4.3.1
 }
 
 # EMBED_TYPE="w2v"
 # EMBED_TYPE="bert"
 # EMBED_TYPE="vulberta"
-EMBED_TYPE="vulberta_sam"
+# EMBED_TYPE="vulberta_sam"
+EMBED_TYPE = "ctg-former"
 
 # ["crossvul", "cvefixes", "mvd", "diversevul", "reveal"]
 
-config_data["create"]["dataset"] = "mvd" 
+config_data["create"]["dataset"] = "reveal" 
 
 if EMBED_TYPE == "w2v":
     config_data["embed"]["embed_type"] = "w2v"
@@ -118,6 +132,19 @@ if EMBED_TYPE == "w2v":
         "model": "data/model/w2v/",
         "tokens": "data/tokens/w2v/",
         "w2v": "data/w2v/"
+    }
+elif EMBED_TYPE == "ctg-former":
+    config_data["embed"]["embed_type"] = "ctg-former"
+    config_data["learning_rate"] = config_data["ctg_former"]["learning_rate"]
+    config_data["paths"] = {
+        "cpg": "data/cpg/",
+        "joern": "data/joern/",
+        "raw": "/home/aikedaer/mydata/data/vuldata/Devign/",
+        "input": "data/input/w2v/",
+        "model": "data/model/w2v/",
+        "tokens": "data/tokens/w2v/",
+        "w2v": "data/w2v/",
+        "output_path": "ckpts/finetune_ckpts/ctg_base",
     }
 elif EMBED_TYPE == "bert": 
     config_data["embed"]["embed_type"] = "bert" 
